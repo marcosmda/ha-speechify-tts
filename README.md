@@ -12,6 +12,7 @@ Natural-sounding [Speechify](https://speechify.ai) voices for Home Assistant. Ad
 
 ## Features
 
+- ⚡ **Streaming**: with an LLM conversation agent (Gemini, OpenAI, Claude…), Assist starts speaking the first sentence while the rest of the reply is still being written
 - 🗣️ **Simba 3.5 voices in 48 languages**, Simba 3.0 also selectable
 - 🎙️ **Every voice in your workspace**, including your cloned voices
 - 🌍 **Voices filtered by language** in the Assist pipeline editor, Speechify's top picks first
@@ -80,7 +81,7 @@ data:
 
 ## Notes
 
-- Audio is MP3.
+- Audio is MP3. Streaming uses Speechify's `/v1/audio/stream` endpoint (up to 20,000 characters per request); one-off `tts.speak` calls use `/v1/audio/speech`.
 - Speechify's free plan allows 1 request per second and 3 at once. Long messages are sent as several requests in a row.
 - Your API key is stored in Home Assistant's config entry and never leaves your instance except to call Speechify.
 

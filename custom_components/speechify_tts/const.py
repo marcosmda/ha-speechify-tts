@@ -17,6 +17,8 @@ DEFAULT_LANGUAGE = "en-US"
 DEFAULT_LOUDNESS_NORMALIZATION = False
 
 AUDIO_FORMAT = "mp3"
+STREAM_ACCEPT = "audio/mpeg"
 
 # Speechify bills and limits by spoken characters per request.
 MAX_CHARS_PER_REQUEST = 2000
+MAX_CHARS_PER_STREAM = 20000

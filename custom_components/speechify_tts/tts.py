@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncGenerator
+import contextlib
 import logging
+import re
 from typing import Any
 
 from homeassistant.components.tts import (
     ATTR_VOICE,
     TextToSpeechEntity,
+    TTSAudioRequest,
+    TTSAudioResponse,
     TtsAudioType,
     Voice,
 )
@@ -17,9 +23,10 @@ from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import SpeechifyConfigEntry
-from .api import SpeechifyError, SpeechifyVoice
+from .api import SpeechifyError, SpeechifyVoice, split_text
 from .const import (
     AUDIO_FORMAT,
+    MAX_CHARS_PER_STREAM,
     CONF_LANGUAGE,
     CONF_LOUDNESS_NORMALIZATION,
     CONF_MODEL,
@@ -157,3 +164,91 @@ class SpeechifyTTSEntity(TextToSpeechEntity):
         except SpeechifyError as err:
             raise HomeAssistantError(f"Speechify: {err}") from err
         return AUDIO_FORMAT, audio
+
+    async def async_stream_tts_audio(
+        self, request: TTSAudioRequest
+    ) -> TTSAudioResponse:
+        """Speak streamed text (e.g. an LLM reply) sentence by sentence."""
+        return TTSAudioResponse(AUDIO_FORMAT, self._stream_audio(request))
+
+    async def _stream_audio(self, request: TTSAudioRequest) -> AsyncGenerator[bytes]:
+        language = request.language
+        options = request.options or {}
+        voice_id = self._pick_voice(language, options.get(ATTR_VOICE))
+        model = options.get(CONF_MODEL) or self._entry.options.get(
+            CONF_MODEL, DEFAULT_MODEL
+        )
+        loudness = self._entry.options.get(
+            CONF_LOUDNESS_NORMALIZATION, DEFAULT_LOUDNESS_NORMALIZATION
+        )
+        client = self._entry.runtime_data.client
+
+        # Sentences flow from the text stream into this queue; None ends it.
+        queue: asyncio.Queue[str | None] = asyncio.Queue()
+
+        async def _collect_sentences() -> None:
+            buffer = ""
+            try:
+                async for chunk in request.message_gen:
+                    buffer += chunk
+                    sentences, buffer = pop_sentences(buffer)
+                    for sentence in sentences:
+                        await queue.put(sentence)
+                if buffer.strip():
+                    await queue.put(buffer.strip())
+            finally:
+                await queue.put(None)
+
+        collector = self.hass.async_create_background_task(
+            _collect_sentences(), name="speechify_tts_collect_sentences"
+        )
+        try:
+            finished = False
+            while not finished:
+                sentence = await queue.get()
+                if sentence is None:
+                    break
+                # The first sentence is spoken alone so audio starts early; after
+                # that, everything that arrived while speaking is sent together.
+                batch = [sentence]
+                while not queue.empty():
+                    more = queue.get_nowait()
+                    if more is None:
+                        finished = True
+                        break
+                    batch.append(more)
+
+                for text in split_text(" ".join(batch), MAX_CHARS_PER_STREAM):
+                    _LOGGER.debug("Streaming %d characters", len(text))
+                    async for audio in client.async_stream(
+                        text,
+                        voice_id=voice_id,
+                        model=model,
+                        language=language or None,
+                        loudness_normalization=loudness,
+                    ):
+                        yield audio
+        except SpeechifyError as err:
+            raise HomeAssistantError(f"Speechify: {err}") from err
+        finally:
+            if not collector.done():
+                collector.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await collector
+
+
+_SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?…。！？])\s+|\n+")
+
+
+def pop_sentences(buffer: str) -> tuple[list[str], str]:
+    """Split complete sentences off the front of a growing text buffer.
+
+    Returns the complete sentences and the unfinished remainder. A sentence
+    counts as complete once whitespace follows its end punctuation, so
+    "3.5" or a sentence still being typed is left in the buffer.
+    """
+    parts = _SENTENCE_BOUNDARY.split(buffer)
+    if len(parts) == 1:
+        return [], buffer
+    *complete, rest = parts
+    return [s.strip() for s in complete if s.strip()], rest

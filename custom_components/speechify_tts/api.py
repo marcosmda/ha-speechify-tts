@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 import logging
 import re
@@ -11,11 +12,14 @@ from typing import Any
 
 import aiohttp
 
-from .const import API_BASE_URL, AUDIO_FORMAT, MAX_CHARS_PER_REQUEST
+from .const import API_BASE_URL, AUDIO_FORMAT, MAX_CHARS_PER_REQUEST, STREAM_ACCEPT
 
 _LOGGER = logging.getLogger(__name__)
 
 _TIMEOUT = aiohttp.ClientTimeout(total=60)
+# Long streams can run for minutes; only fail when the server goes quiet.
+_STREAM_TIMEOUT = aiohttp.ClientTimeout(total=None, connect=15, sock_read=30)
+_STREAM_CHUNK_SIZE = 4096
 _MAX_RETRIES = 2
 _RETRYABLE_STATUS = {429, 500, 502, 503}
 
@@ -89,28 +93,13 @@ class SpeechifyClient:
                     if resp.status < 400:
                         return await resp.json()
 
-                    body: dict[str, Any] = {}
-                    try:
-                        body = await resp.json()
-                    except (aiohttp.ContentTypeError, ValueError):
-                        pass
-                    error = body.get("error") or {}
-                    code = error.get("code", "unknown")
-                    message = error.get("message") or resp.reason or "error"
-
+                    error = await _error_from_response(resp)
                     if resp.status in _RETRYABLE_STATUS and attempt < _MAX_RETRIES:
                         delay = _retry_delay(resp.headers.get("Retry-After"), attempt)
-                        _LOGGER.debug(
-                            "Speechify %s (%s), retrying in %.1fs", resp.status, code, delay
-                        )
+                        _LOGGER.debug("%s, retrying in %.1fs", error, delay)
                         await asyncio.sleep(delay)
                         continue
-
-                    if resp.status == 401:
-                        raise SpeechifyAuthError(message)
-                    if resp.status == 402:
-                        raise SpeechifyPaymentError(message)
-                    raise SpeechifyError(f"{resp.status} {code}: {message}")
+                    raise error
             except (aiohttp.ClientError, asyncio.TimeoutError) as err:
                 if attempt < _MAX_RETRIES:
                     await asyncio.sleep(_retry_delay(None, attempt))
@@ -166,6 +155,83 @@ class SpeechifyClient:
             except (KeyError, ValueError) as err:
                 raise SpeechifyError("Speechify returned no audio") from err
         return bytes(audio)
+
+    async def async_stream(
+        self,
+        text: str,
+        *,
+        voice_id: str,
+        model: str,
+        language: str | None,
+        loudness_normalization: bool,
+    ) -> AsyncGenerator[bytes]:
+        """Stream MP3 audio for text as Speechify generates it.
+
+        Retries happen only before the first audio byte; once audio is flowing,
+        an error ends the stream with SpeechifyError.
+        """
+        payload: dict[str, Any] = {
+            "input": text,
+            "voice_id": voice_id,
+            "model": model,
+            "options": {"loudness_normalization": loudness_normalization},
+        }
+        if language:
+            payload["language"] = language
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Accept": STREAM_ACCEPT,
+        }
+        url = f"{self._base_url}/v1/audio/stream"
+
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                resp = await self._session.post(
+                    url, headers=headers, json=payload, timeout=_STREAM_TIMEOUT
+                )
+            except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+                if attempt < _MAX_RETRIES:
+                    await asyncio.sleep(_retry_delay(None, attempt))
+                    continue
+                raise SpeechifyError(f"Cannot reach Speechify: {err}") from err
+
+            if resp.status >= 400:
+                error = await _error_from_response(resp)
+                resp.release()
+                if resp.status in _RETRYABLE_STATUS and attempt < _MAX_RETRIES:
+                    delay = _retry_delay(resp.headers.get("Retry-After"), attempt)
+                    _LOGGER.debug("%s, retrying stream in %.1fs", error, delay)
+                    await asyncio.sleep(delay)
+                    continue
+                raise error
+
+            try:
+                async for chunk in resp.content.iter_chunked(_STREAM_CHUNK_SIZE):
+                    if chunk:
+                        yield chunk
+            except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+                raise SpeechifyError(f"Speechify stream interrupted: {err}") from err
+            finally:
+                resp.release()
+            return
+
+
+async def _error_from_response(resp: aiohttp.ClientResponse) -> SpeechifyError:
+    """Build the right exception from a non-2xx Speechify response."""
+    body: dict[str, Any] = {}
+    try:
+        body = await resp.json(content_type=None)
+    except (aiohttp.ClientError, ValueError):
+        pass
+    error = body.get("error") if isinstance(body, dict) else None
+    error = error if isinstance(error, dict) else {}
+    code = error.get("code", "unknown")
+    message = error.get("message") or resp.reason or "error"
+    if resp.status == 401:
+        return SpeechifyAuthError(message)
+    if resp.status == 402:
+        return SpeechifyPaymentError(message)
+    return SpeechifyError(f"Speechify {resp.status} {code}: {message}")
 
 
 def _retry_delay(retry_after: str | None, attempt: int) -> float:
