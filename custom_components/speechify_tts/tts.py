@@ -49,8 +49,9 @@ def _base(code: str) -> str:
 class SpeechifyTTSEntity(TextToSpeechEntity):
     """Speechify TTS entity."""
 
-    _attr_has_entity_name = True
-    _attr_name = None
+    # The TTS manager needs the entity's own name, so don't inherit it from the device.
+    _attr_has_entity_name = False
+    _attr_name = "Speechify"
     _attr_supported_options = [ATTR_VOICE, CONF_MODEL]
 
     def __init__(self, entry: SpeechifyConfigEntry) -> None:
