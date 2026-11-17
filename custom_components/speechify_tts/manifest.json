@@ -1,0 +1,13 @@
+{
+  "domain": "speechify_tts",
+  "name": "Speechify TTS",
+  "codeowners": ["@marcosmda"],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/marcosmda/ha-speechify-tts",
+  "integration_type": "service",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/marcosmda/ha-speechify-tts/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}

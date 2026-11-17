@@ -1,0 +1,50 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to Speechify",
+        "description": "Create an API key at platform.speechify.ai and paste it below.",
+        "data": {
+          "api_key": "API key"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Speechify API key expired",
+        "description": "The stored API key no longer works. Paste a new one.",
+        "data": {
+          "api_key": "API key"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "The API key was rejected.",
+      "cannot_connect": "Could not reach Speechify. Check your connection and try again."
+    },
+    "abort": {
+      "already_configured": "This API key is already set up.",
+      "reauth_successful": "The API key was updated."
+    }
+  },
+  "options": {
+    "abort": {
+      "not_loaded": "The integration isn't loaded yet. Check the API key and try again."
+    },
+    "step": {
+      "init": {
+        "title": "Speechify options",
+        "data": {
+          "voice": "Default voice",
+          "model": "Model",
+          "language": "Default language (optional, e.g. pt-BR)",
+          "loudness_normalization": "Loudness normalization"
+        },
+        "data_description": {
+          "voice": "Used when a request names no voice and the voice speaks the requested language.",
+          "model": "simba-3.5 covers 48 languages; simba-3.0 covers English, de-DE, es-ES, es-MX, fr-FR, it-IT and pt-BR.",
+          "language": "Leave empty to use the default voice's language.",
+          "loudness_normalization": "Evens out volume between voices. Adds a little latency."
+        }
+      }
+    }
+  }
+}
